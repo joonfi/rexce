@@ -1,0 +1,15 @@
+# CODEOWNERS — release evidence governance
+# Adjust these to your GitHub org/team handles.
+
+# Default owners
+*                                   @org/repo-owners
+
+# Policies and validator workflows require SRE + Security + Repo Owners
+/policies/**                        @org/sre @org/security @org/repo-owners
+/.github/workflows/**               @org/sre @org/security @org/repo-owners
+
+# Evidence changes (optional): require SRE and Release Managers oversight
+/releases/**                         @org/sre @org/release-managers
+
+# Documentation
+/docs/**                            @org/repo-owners

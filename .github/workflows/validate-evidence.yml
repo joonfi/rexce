@@ -1,0 +1,233 @@
+# File: .github/workflows/validate-evidence.yml
+name: Validate Evidence — Aggregate Report + Policy Tests
+
+on:
+  pull_request:
+    paths:
+      - "releases/**"
+      - "policies/**"
+      - "policies/tests/**"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch base branch ref (for base/head comparisons)
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.base_ref }}" --depth=1 || git fetch origin --prune
+          git rev-parse --verify "origin/${{ github.base_ref }}" >/dev/null 2>&1 || {
+            echo "ERROR: Unable to fetch origin/${{ github.base_ref }}; base branch is required for append-only checks."
+            exit 1
+          }
+
+      - name: Install tooling (conftest, cosign, jq, yq)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -L -o conftest.tar.gz https://github.com/open-policy-agent/conftest/releases/latest/download/conftest_0.56.0_Linux_x86_64.tar.gz
+          tar -xzf conftest.tar.gz
+          sudo mv conftest /usr/local/bin/conftest
+          conftest --version
+
+          curl -L -o cosign https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64
+          chmod +x cosign
+          sudo mv cosign /usr/local/bin/cosign
+          cosign version
+
+          jq --version
+
+          YQ_VERSION="v4.44.3"
+          curl -L -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Validate (aggregate + annotations + PR comment)
+        id: agg
+        shell: bash
+        env:
+          COSIGN_CERT_ISSUER: ${{ secrets.COSIGN_CERT_ISSUER }}
+          COSIGN_CERT_IDENTITY: ${{ secrets.COSIGN_CERT_IDENTITY }}
+          PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels) }}
+        run: |
+          set -euo pipefail
+          set +e
+
+          REPORT=validation-report.md
+          : > "$REPORT"
+
+          FAILED=0
+          REPORT_MARKER="<!-- EVIDENCE-VALIDATION-REPORT -->"
+
+          # Convert PR labels to ["label1","label2"]
+          echo "$PR_LABELS_JSON" > /tmp/pr_labels_raw.json
+          jq -r '[.[]?.name] // []' /tmp/pr_labels_raw.json > /tmp/pr_labels.json
+
+          open_details() { echo "<details>" >> "$REPORT"; echo "<summary>$1</summary>" >> "$REPORT"; echo "" >> "$REPORT"; }
+          close_details() { echo "" >> "$REPORT"; echo "</details>" >> "$REPORT"; echo "" >> "$REPORT"; }
+
+          fail() { FAILED=1; }
+
+          echo "$REPORT_MARKER" >> "$REPORT"
+          echo "# Validation Report" >> "$REPORT"
+          echo "" >> "$REPORT"
+          echo "- PR: #${{ github.event.pull_request.number }}" >> "$REPORT"
+          echo "- Base: ${{ github.base_ref }}" >> "$REPORT"
+          echo "- Head: ${{ github.sha }}" >> "$REPORT"
+          echo "" >> "$REPORT"
+
+          # Load settings once for dynamic checks
+          SETTINGS_FILE="policies/policy-settings.yml"
+          if [ ! -f "$SETTINGS_FILE" ]; then
+            echo "Missing $SETTINGS_FILE" >&2
+            echo "## Summary" >> "$REPORT"; echo "" >> "$REPORT"; echo "❌ Missing policy settings." >> "$REPORT"
+            echo "failed=1" >> $GITHUB_OUTPUT
+            echo "report_path=${REPORT}" >> $GITHUB_OUTPUT
+            cat "$REPORT" >> $GITHUB_STEP_SUMMARY
+            exit 0
+          fi
+
+          CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" || true)
+          REL_DIRS=$(echo "$CHANGED" | grep -E '^releases/[0-9]{4}/[0-9]{2}/REL-[^/]*/' | awk -F/ '{print $1"/"$2"/"$3"/"$4}' | sort -u || true)
+
+          if [ -n "$REL_DIRS" ]; then
+            echo "## Mode: Evidence validation" >> "$REPORT"; echo "" >> "$REPORT"
+            for dir in $REL_DIRS; do
+              rr="${dir}/release-record.yml"
+              if [ ! -f "$rr" ]; then
+                open_details "❌ Missing file: $rr"; echo "Missing required file" >> "$REPORT"; close_details
+                fail
+                continue
+              fi
+
+              pushd "$dir" >/dev/null
+              find . -type f | sed 's|^\./||' | sort > /tmp/inventory.txt
+              popd >/dev/null
+
+              yq -o=json '.' "$rr" > /tmp/record.json
+
+              jq -n \
+                --argfile r /tmp/record.json \
+                --rawfile inv /tmp/inventory.txt \
+                --argfile pr_labels /tmp/pr_labels.json \
+                '{policy:($r.policy // {}), release:$r.release, source:$r.source, artifacts:$r.artifacts, quality:$r.quality, operational_readiness:$r.operational_readiness, approvals:$r.approvals, notes:($r.notes // {}), inventory:{files:($inv|split("\n")|map(select(length>0)))}, meta:{pr_labels:$pr_labels}}' \
+                > /tmp/record_with_inventory.json
+
+              open_details "Release policy: $rr"
+              conftest test /tmp/record_with_inventory.json -p policies -n release -d "$SETTINGS_FILE" >> "$REPORT" 2>&1
+              rc=$?
+              close_details
+              if [ $rc -ne 0 ]; then fail; fi
+            done
+
+            # Signature verification (from settings)
+            REQ_SIGS_JSON=$(yq -o=json '.policy.signature.verify_refs.required' "$SETTINGS_FILE")
+            if [ "$REQ_SIGS_JSON" = "null" ] || [ -z "$REQ_SIGS_JSON" ]; then
+              echo "No signature verification list configured under policy.signature.verify_refs.required" >> "$REPORT"
+            else
+              for dir in $REL_DIRS; do
+                for f in $(echo "$REQ_SIGS_JSON" | jq -r '.[]'); do
+                  target="${dir}/${f}"
+                  if [ ! -f "$target" ] || [ ! -f "${target}.sig" ] || [ ! -f "${target}.bundle" ]; then
+                    open_details "❌ Missing signature artifacts for: $target"; echo "Missing file or signature artifacts" >> "$REPORT"; close_details
+                    fail
+                    continue
+                  fi
+                  open_details "cosign verify: $target"
+                  cosign verify-blob --bundle "${target}.bundle" --signature "${target}.sig" \
+                    --certificate-identity "$COSIGN_CERT_IDENTITY" \
+                    --certificate-oidc-issuer "$COSIGN_CERT_ISSUER" \
+                    "$target" >> "$REPORT" 2>&1
+                  rc=$?
+                  close_details
+                  if [ $rc -ne 0 ]; then fail; fi
+                done
+              done
+            fi
+
+          else
+            echo "## Mode: Policy regression" >> "$REPORT"; echo "" >> "$REPORT"
+
+            # Run repo fixtures across namespaces with settings as data
+            for ns in release promotion consistency; do
+              pass_dir="policies/tests/${ns}/pass"
+              fail_dir="policies/tests/${ns}/fail"
+
+              for f in ${pass_dir}/*.json; do
+                [ -f "$f" ] || continue
+                open_details "PASS fixture (${ns}): $(basename "$f")"
+                conftest test "$f" -p policies -n "$ns" -d "$SETTINGS_FILE" >> "$REPORT" 2>&1
+                rc=$?
+                close_details
+                if [ $rc -ne 0 ]; then fail; fi
+              done
+
+              for f in ${fail_dir}/*.json; do
+                [ -f "$f" ] || continue
+                open_details "FAIL fixture (${ns}): $(basename "$f")"
+                conftest test "$f" -p policies -n "$ns" -d "$SETTINGS_FILE" >> "$REPORT" 2>&1
+                rc=$?
+                close_details
+                if [ $rc -eq 0 ]; then fail; fi
+              done
+            done
+          fi
+
+          if [ $FAILED -eq 0 ]; then
+            echo "## Summary" >> "$REPORT"; echo "" >> "$REPORT"; echo "✅ No violations found." >> "$REPORT"
+          else
+            echo "## Summary" >> "$REPORT"; echo "" >> "$REPORT"; echo "❌ Violations found." >> "$REPORT"
+          fi
+
+          echo "failed=${FAILED}" >> $GITHUB_OUTPUT
+          echo "report_path=${REPORT}" >> $GITHUB_OUTPUT
+          cat "$REPORT" >> $GITHUB_STEP_SUMMARY
+          exit 0
+
+      - name: Post/Update PR comment with report
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- EVIDENCE-VALIDATION-REPORT -->';
+            const reportPath = '${{ steps.agg.outputs.report_path }}';
+            const body = fs.existsSync(reportPath)
+              ? fs.readFileSync(reportPath, 'utf8')
+              : `${marker}
+# Validation Report
+
+Report file not found.`;
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            const existing = comments.find(c => (c.body || '').includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Fail if validation found issues
+        if: always()
+        shell: bash
+        run: |
+          if [ "${{ steps.agg.outputs.failed }}" = "1" ]; then
+            echo "Validation failed. See PR comment and job summary for details."
+            exit 1
+          fi
+          echo "Validation passed."

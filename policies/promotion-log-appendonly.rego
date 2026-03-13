@@ -1,9 +1,20 @@
+# File: policies/promotion-log-appendonly.rego
+# Metadata Header
+# Title: promotion-log-appendonly.rego
+# Owner(s): SRE, Security, Repo Owners
+# Reviewed: 2026-03-13T00:00:00Z
+# Purpose: Enforce append-only promotion history; required canary stages when regulated.
+# Guardrails: Historical steps must not change; regulated canary stages present.
+# Inputs: { "base": {..}|null, "head": {..} }; Data via -d policies/policy-settings.yml
+# Outputs: deny[] on mutation or reordering.
+
 package promotion
 
-# Expects input:
-# { "base": {..} | null, "head": {..} }
+config := data["policy-settings"].policy
 
-required_stages := {"1%","5%","25%","50%","100%"}
+########################
+# Structure checks
+########################
 
 deny[msg] {
   not head_has_required_shape
@@ -15,17 +26,19 @@ head_has_required_shape {
   input.head.promotion.steps
 }
 
-# Append-only enforcement
+########################
+# Append-only enforcement (prefix-equal)
+########################
+
+base_exists {
+  input.base != null
+  input.base.promotion.steps
+}
 
 deny[msg] {
   base_exists
   not prefix_equal
   msg := "promotion-log must be append-only: existing steps modified/removed/reordered"
-}
-
-base_exists {
-  input.base != null
-  input.base.promotion.steps
 }
 
 prefix_equal {
@@ -41,19 +54,12 @@ exists_diff(base_steps, head_steps) {
   base_steps[i] != head_steps[i]
 }
 
-# Required canary stages when regulated
+########################
+# Regulated canary stages
+########################
 
-deny[msg] {
-  input.head.promotion.regulated == true
-  missing := missing_stage
-  msg := sprintf("Regulated promotion requires canary stage %s in promotion steps", [missing])
-}
-
-missing_stage := s {
-  s := stage
-  stage := stages[_]
-  not stage_present(stage)
-  stages := set_to_array(required_stages)
+required_stage(stage) {
+  stage := config.promotion.regulated_canary_stages[_]
 }
 
 stage_present(stage) {
@@ -61,6 +67,9 @@ stage_present(stage) {
   input.head.promotion.steps[i].traffic == stage
 }
 
-set_to_array(s) = a {
-  a := [x | x := s[_]]
+deny[msg] {
+  input.head.promotion.regulated == true
+  stage := required_stage(stage)
+  not stage_present(stage)
+  msg := sprintf("Regulated promotion requires canary stage %s", [stage])
 }

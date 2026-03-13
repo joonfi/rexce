@@ -1,0 +1,62 @@
+{
+  "base": {
+    "promotion": {
+      "release_id": "REL-2026-03-12-1",
+      "regulated": true,
+      "strategy": "canary",
+      "steps": [
+        {
+          "traffic": "1%",
+          "start": "2026-03-12T10:01:00Z",
+          "end": "2026-03-12T10:02:00Z",
+          "health": "pass",
+          "approver": "sre"
+        }
+      ]
+    }
+  },
+  "head": {
+    "promotion": {
+      "release_id": "REL-2026-03-12-1",
+      "regulated": true,
+      "strategy": "canary",
+      "steps": [
+        {
+          "traffic": "1%",
+          "start": "2026-03-12T10:01:00Z",
+          "end": "2026-03-12T10:02:00Z",
+          "health": "pass",
+          "approver": "sre"
+        },
+        {
+          "traffic": "5%",
+          "start": "2026-03-12T10:02:00Z",
+          "end": "2026-03-12T10:03:00Z",
+          "health": "pass",
+          "approver": "sre"
+        },
+        {
+          "traffic": "25%",
+          "start": "2026-03-12T10:03:00Z",
+          "end": "2026-03-12T10:04:00Z",
+          "health": "pass",
+          "approver": "sre"
+        },
+        {
+          "traffic": "50%",
+          "start": "2026-03-12T10:04:00Z",
+          "end": "2026-03-12T10:05:00Z",
+          "health": "pass",
+          "approver": "sre"
+        },
+        {
+          "traffic": "100%",
+          "start": "2026-03-12T10:05:00Z",
+          "end": "2026-03-12T10:06:00Z",
+          "health": "pass",
+          "approver": "sre"
+        }
+      ]
+    }
+  }
+}

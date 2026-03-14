@@ -1,0 +1,33 @@
+{
+  "override": {
+    "regulated": false,
+    "reason": "Emergency patch for critical incident",
+    "ticket": "SEC-1234",
+    "approved_by": "Jane Doe (SRE), John Smith (Security)",
+    "approved_at": "2026-03-10T10:00:00Z",
+    "expires_at": "2026-03-15T10:00:00Z",
+    "approvals": [
+      { "role": "SRE", "by": "Jane Doe" },
+      { "role": "Security", "by": "John Smith" }
+    ]
+  },
+  "labels": ["regulatory-override-approved"],
+  "release": {
+    "id": "rel-2026-03-004",
+    "created_at": "2026-03-10T12:30:00Z",
+    "risk_class": "high",
+    "regulatory": { "pci": true }
+  },
+  "artifact": {
+    "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "evidence": {
+    "sbom": { "type": "spdx-json", "ref": "evidence/sbom.spdx.json" },
+    "provenance": { "ref": "evidence/provenance.intoto.json" }
+  },
+  "slo": {
+    "dashboard_url": "https://observability.company.tld/d/override-case",
+    "runbook_url": "https://kb.company.tld/runbooks/override-approved"
+  },
+  "rollback": { "triggers": ["metric_breach", "slo_violation"] }
+}

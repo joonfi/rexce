@@ -1,34 +1,19 @@
 {
-  "base": {
-    "promotion": {
-      "release_id": "REL-2026-03-12-1",
-      "regulated": true,
-      "strategy": "canary",
-      "steps": [
-        {
-          "traffic": "1%",
-          "start": "2026-03-12T10:01:00Z",
-          "end": "2026-03-12T10:02:00Z",
-          "health": "pass",
-          "approver": "sre"
-        }
-      ]
-    }
+  "previous": {
+    "steps": [
+      { "stage": "1%", "status": "complete" },
+      { "stage": "5%", "status": "complete" }
+    ]
   },
-  "head": {
-    "promotion": {
-      "release_id": "REL-2026-03-12-1",
-      "regulated": true,
-      "strategy": "canary",
-      "steps": [
-        {
-          "traffic": "1%",
-          "start": "2026-03-12T10:01:00Z",
-          "end": "2026-03-12T10:02:00Z",
-          "health": "FAIL",
-          "approver": "sre"
-        }
-      ]
-    }
+  "current": {
+    "steps": [
+      { "stage": "1%", "status": "in_progress" },
+      { "stage": "5%", "status": "complete" },
+      { "stage": "25%", "status": "in_progress" }
+    ]
+  },
+  "promotion": {
+    "strategy": "canary",
+    "stages": ["1%", "5%", "25%", "50%", "100%"]
   }
 }

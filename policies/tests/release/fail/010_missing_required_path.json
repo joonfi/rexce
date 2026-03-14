@@ -1,0 +1,21 @@
+{
+  "release": {
+    "id": "rel-2026-03-101",
+    "created_at": "2026-03-10T13:00:00Z",
+    "risk_class": "high",
+    "regulatory": { "pci": true }
+  },
+  "artifact": {
+    "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "evidence": {
+    "sbom": { "type": "spdx-json" },
+    "provenance": { "ref": "evidence/provenance.intoto.jsonl" }
+  },
+  "slo": {
+    "dashboard_url": "https://obs.company.tld/d/missing",
+    "runbook_url": "https://kb.company.tld/runbooks/missing"
+  },
+  "rollback": { "triggers": ["metric_breach", "error_spike"] },
+  "labels": []
+}

@@ -1,0 +1,21 @@
+{
+  "release": {
+    "id": "rel-2026-03-003",
+    "created_at": "2026-03-10T12:00:00Z",
+    "risk_class": "high",
+    "regulatory": { "pci": true }
+  },
+  "artifact": {
+    "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "evidence": {
+    "sbom": { "type": "spdx-json", "ref": "evidence/sbom.spdx.json" },
+    "provenance": { "ref": "evidence/provenance.intoto.jsonl" }
+  },
+  "slo": {
+    "dashboard_url": "https://dash.ops.company.tld/u/abcd",
+    "runbook_url": "https://ops.company.tld/runbooks/service-123"
+  },
+  "rollback": { "triggers": ["synthetic_check_failure", "error_spike"] },
+  "labels": []
+}

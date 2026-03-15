@@ -1,6 +1,55 @@
-# excerpt — invariant enforcement
-- name: Verify Xcectua Interface version
+- name: Verify Xcectua Interface version (tag == VERSION; fail-closed)
+  shell: bash
   run: |
-    TAG_VERSION="${GITHUB_REF_NAME#v}"
-    KIT_VERSION="$(cat rexce/xcectua-interface/VERSION)"
-    test "${TAG_VERSION}" = "${KIT_VERSION}"
+    set -euo pipefail
+
+    # -----------------------------
+    # Invariant: Git tag vX.Y.Z must match kit VERSION (X.Y.Z)
+    # -----------------------------
+
+    # Defensive: this step is intended for tag refs
+    # GITHUB_REF_NAME is typically the tag name on tag-triggered workflows.
+    if [[ -z "${GITHUB_REF_NAME:-}" ]]; then
+      echo "ERROR: GITHUB_REF_NAME is empty; this step expects to run on tag refs." >&2
+      exit 1
+    fi
+
+    TAG_NAME="${GITHUB_REF_NAME}"
+
+    # Enforce tag format: vX.Y.Z (strict SemVer core; no prerelease/build in this invariant)
+    if [[ ! "${TAG_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "ERROR: Tag '${TAG_NAME}' does not match required format 'vX.Y.Z'." >&2
+      exit 1
+    fi
+
+    TAG_VERSION="${TAG_NAME#v}"
+
+    KIT_VERSION_FILE="rexce/xcectua-interface/VERSION"
+    if [[ ! -f "${KIT_VERSION_FILE}" ]]; then
+      echo "ERROR: Missing kit version file: ${KIT_VERSION_FILE}" >&2
+      exit 1
+    fi
+
+    # Read first line only; strip CR (Windows), trim whitespace.
+    # Fail if blank.
+    KIT_VERSION="$(head -n 1 "${KIT_VERSION_FILE}" | tr -d '\r' | xargs)"
+    if [[ -z "${KIT_VERSION}" ]]; then
+      echo "ERROR: Kit VERSION is empty in ${KIT_VERSION_FILE}" >&2
+      exit 1
+    fi
+
+    # Optional: enforce kit version is X.Y.Z too (keeps strict determinism)
+    if [[ ! "${KIT_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "ERROR: Kit VERSION '${KIT_VERSION}' does not match required format 'X.Y.Z'." >&2
+      exit 1
+    fi
+
+    echo "Tag version : ${TAG_VERSION}"
+    echo "Kit version : ${KIT_VERSION}"
+
+    if [[ "${TAG_VERSION}" != "${KIT_VERSION}" ]]; then
+      echo "ERROR: VERSION mismatch. Tag '${TAG_NAME}' -> '${TAG_VERSION}' must equal kit VERSION '${KIT_VERSION}'." >&2
+      exit 1
+    fi
+
+    echo "OK: Tag '${TAG_NAME}' matches kit VERSION '${KIT_VERSION}'."

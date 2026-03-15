@@ -1,0 +1,38 @@
+jobs:
+  verify-gate-byte-identity:
+    name: Verify Governance Gate Byte Identity
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout rexec
+        uses: actions/checkout@v4
+        with:
+          path: rexec
+
+      - name: Checkout Xcectua
+        uses: actions/checkout@v4
+        with:
+          repository: <ORG_OR_USERNAME>/Xcectua
+          ref: main
+          path: Xcectua
+
+      - name: Checkout Actuence
+        uses: actions/checkout@v4
+        with:
+          repository: <ORG_OR_USERNAME>/Actuence
+          ref: main
+          path: Actuence
+
+      - name: Verify rer-governance-gate.yml byte identity
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sha256sum \
+            rexec/rexce/xcectua-interface/templates/xcectua-circuit/.github/workflows/rer-governance-gate.yml \
+            Xcectua/.github/workflows/rer-governance-gate.yml \
+            Actuence/.github/workflows/rer-governance-gate.yml
+
+          echo "✅ Governance gate files are byte-identical"

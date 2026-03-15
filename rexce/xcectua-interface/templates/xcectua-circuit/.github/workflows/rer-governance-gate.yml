@@ -1,319 +1,297 @@
+# File: rexce/xcectua-interface/templates/xcectua-circuit/.github/workflows/rer-governance-gate.yml
 name: Validate Release Evidence (RER)
 
 on:
   pull_request:
+    branches: [ "main" ]
   push:
     branches: [ "main" ]
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
 
 env:
-  RER_LOCKFILE: rer/rer.lock.yml
-  PDR_DIR: pdr
+  PDR_ROOT: pdr
+  PDR_LOGS: pdr/logs
+  PDR_INPUTS: pdr/inputs
+  # Canonical rexec policy source path (policy-only; no evidence lives here)
+  REXEC_POLICY_SRC: rexce/xcectua-interface/policies
+  REXEC_INTERFACE_GATE: rexce/xcectua-interface/templates/xcectua-circuit/.github/workflows/rer-governance-gate.yml
+  # Deterministic tool versions (pin for reproducibility)
+  CONFTEST_VERSION: "0.52.0"
+  OPA_VERSION: "0.66.0"
+  COSIGN_INSTALLER: "sigstore/cosign-installer@v3.6.0"
+  YQ_VERSION: "v4.43.1"
 
 jobs:
-  validate:
-    name: Governance Gate
+  gate:
+    name: Validate Release Evidence (RER)
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout consumer repository
+      - name: Checkout consumer repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # required for base/head comparisons via git show (promotion append-only)
+          fetch-depth: 0
 
-      - name: Prepare PDR directory
-        if: always()
+      - name: Prepare PDR directory (early, fail-closed posture)
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf "${PDR_DIR}"
-          mkdir -p "${PDR_DIR}/logs" "${PDR_DIR}/inputs"
-          echo "PDR workspace initialized at ${PDR_DIR}"
+          mkdir -p "${PDR_LOGS}" "${PDR_INPUTS}"
+          cat > "${PDR_ROOT}/meta.json" << 'JSON'
+          {
+            "runner_os": "${{ runner.os }}",
+            "run_id": "${{ github.run_id }}",
+            "run_number": "${{ github.run_number }}",
+            "job": "${{ github.job }}",
+            "workflow": "${{ github.workflow }}",
+            "repo": "${{ github.repository }}",
+            "sha": "${{ github.sha }}",
+            "ref": "${{ github.ref }}",
+            "actor": "${{ github.actor }}",
+            "event_name": "${{ github.event_name }}"
+          }
+          JSON
 
-      - name: Require COSIGN_PUBLIC_KEY
+      - name: Install yq (pinned)
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${{ secrets.COSIGN_PUBLIC_KEY || '' }}" ]]; then
-            echo "ERROR: COSIGN_PUBLIC_KEY secret is required"; exit 1
-          fi
+          curl -sSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          chmod +x /usr/local/bin/yq
+          yq --version
 
-      - name: Install yq (YAML processor)
-        uses: mikefarah/yq@v4.44.3
-
-      - name: Read RER lockfile
+      - name: Read rer.lock.yml (rexec pin and policy paths)
         id: lock
         shell: bash
         run: |
           set -euo pipefail
-          test -f "${RER_LOCKFILE}"
-          RER_REPO="$(yq '.rer.repository' "${RER_LOCKFILE}")"
-          RER_REF="$(yq '.rer.ref' "${RER_LOCKFILE}")"
-          RER_FETCHED_PATH="$(yq '.rer.fetched_path' "${RER_LOCKFILE}")"
-          POLICIES_PATH="$(yq '.policy_contract.policies_path' "${RER_LOCKFILE}")"
-          SETTINGS_PATH="$(yq '.policy_contract.settings_path' "${RER_LOCKFILE}")"
+          test -f rer/rer.lock.yml
+          REXEC_REPO="$(yq -r '.rexec.repository' rer/rer.lock.yml)"
+          REXEC_REF="$(yq -r '.rexec.ref' rer/rer.lock.yml)"
+          POLICIES_PATH="$(yq -r '.policy_contract.policies_path' rer/rer.lock.yml)"
+          SETTINGS_PATH="$(yq -r '.policy_contract.settings_path' rer/rer.lock.yml)"
+          {
+            echo "rexec_repository=${REXEC_REPO}"
+            echo "rexec_ref=${REXEC_REF}"
+            echo "policies_path=${POLICIES_PATH}"
+            echo "settings_path=${SETTINGS_PATH}"
+          } >> "$GITHUB_OUTPUT"
 
-          echo "RER_REPO=${RER_REPO}"                 | tee -a $GITHUB_OUTPUT
-          echo "RER_REF=${RER_REF}"                   | tee -a $GITHUB_OUTPUT
-          echo "RER_FETCHED_PATH=${RER_FETCHED_PATH}" | tee -a $GITHUB_OUTPUT
-          echo "POLICIES_PATH=${POLICIES_PATH}"       | tee -a $GITHUB_OUTPUT
-          echo "SETTINGS_PATH=${SETTINGS_PATH}"       | tee -a $GITHUB_OUTPUT
-
-      - name: Fetch rexec at pinned ref
+      - name: Fetch rexec at pinned ref (policy-only)
         uses: actions/checkout@v4
         with:
-          repository: ${{ steps.lock.outputs.RER_REPO }}
-          ref: ${{ steps.lock.outputs.RER_REF }}
-          path: ${{ steps.lock.outputs.RER_FETCHED_PATH }}
+          repository: ${{ steps.lock.outputs.rexec_repository }}
+          ref: ${{ steps.lock.outputs.rexec_ref }}
+          path: rer/fetched/rexec
+          # If rexec is private, set a consumer secret REXEC_READ_TOKEN:
+          token: ${{ secrets.REXEC_READ_TOKEN || github.token }}
 
-      - name: Install conftest
+      - name: Materialize policies into pinned consumer path
         shell: bash
         run: |
           set -euo pipefail
-          CONTF_VER="0.53.0"
-          curl -sSL -o /tmp/conftest.tar.gz "https://github.com/open-policy-agent/conftest/releases/download/v${CONTF_VER}/conftest_${CONTF_VER}_Linux_x86_64.tar.gz"
-          tar -C /usr/local/bin -xzf /tmp/conftest.tar.gz conftest
+          mkdir -p "$(dirname "${{ steps.lock.outputs.policies_path }}")"
+          rm -rf "${{ steps.lock.outputs.policies_path }}"
+          cp -R "rer/fetched/rexec/${REXEC_POLICY_SRC}" "${{ steps.lock.outputs.policies_path }}"
+          test -f "${{ steps.lock.outputs.settings_path }}"
+
+      - name: Compute policy/settings hashes (sorted → rer-policy-sha256.txt)
+        shell: bash
+        run: |
+          set -euo pipefail
+          POLICY_DIR="${{ steps.lock.outputs.policies_path }}"
+          SETTINGS_FILE="${{ steps.lock.outputs.settings_path }}"
+          tmp_list="$(mktemp)"
+          find "${POLICY_DIR}" -type f -name '*.rego' | LC_ALL=C sort > "${tmp_list}"
+          echo "${SETTINGS_FILE}" >> "${tmp_list}"
+          LC_ALL=C sort -u "${tmp_list}" -o "${tmp_list}"
+          : > "${PDR_ROOT}/rer-policy-sha256.txt"
+          while IFS= read -r f; do
+            sha="$(sha256sum "$f" | awk '{print $1}')"
+            printf "%s  %s\n" "${sha}" "${f}" >> "${PDR_ROOT}/rer-policy-sha256.txt"
+          done < "${tmp_list}"
+          rm -f "${tmp_list}"
+
+      - name: Discover evidence (releases/**/release-record.yml) → evidence-dirs.txt
+        id: discover
+        shell: bash
+        run: |
+          set -euo pipefail
+          LC_ALL=C find releases -type f -name 'release-record.yml' 2>/dev/null \
+            | awk -F'/release-record.yml' '{print $1}' \
+            | LC_ALL=C sort -u > "${PDR_ROOT}/evidence-dirs.txt" || true
+          ECOUNT="$(wc -l < "${PDR_ROOT}/evidence-dirs.txt" | awk '{print $1}')"
+          echo "evidence_count=${ECOUNT}" >> "$GITHUB_OUTPUT"
+          echo '{}' > "${PDR_ROOT}/result.json"
+          # mark early failure if none
+          if [ "${ECOUNT}" -eq 0 ]; then
+            echo "failure=true" >> "$GITHUB_ENV"
+            cat > "${PDR_ROOT}/summary.md" << 'MD'
+            # RER Gate Result
+
+            **FAILED** — No evidence discovered under `releases/**/release-record.yml`.
+            MD
+          fi
+
+      - name: Install cosign (pinned)
+        if: env.failure != 'true'
+        uses: ${{ env.COSIGN_INSTALLER }}
+        with:
+          cosign-release: 'v2.2.4'
+
+      - name: Install conftest (pinned)
+        if: env.failure != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmpd="$(mktemp -d)"
+          curl -sSL -o "${tmpd}/conftest.tgz" "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_Linux_x86_64.tar.gz"
+          tar -xzf "${tmpd}/conftest.tgz" -C "${tmpd}"
+          install "${tmpd}/conftest" /usr/local/bin/conftest
+          rm -rf "${tmpd}"
           conftest --version
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3.6.0
-
-      - name: Compute policy/settings hashes (deterministic order)
+      - name: Install OPA (pinned) for optional policy checks
+        if: env.failure != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          POL="${{ steps.lock.outputs.POLICIES_PATH }}"
-          SET="${{ steps.lock.outputs.SETTINGS_PATH }}"
+          curl -sSL -o /usr/local/bin/opa "https://openpolicyagent.org/downloads/v${OPA_VERSION}/opa_linux_amd64_static"
+          chmod +x /usr/local/bin/opa
+          opa version
 
-          mapfile -t REGO_FILES < <(find "${POL}" -type f -name '*.rego' | LC_ALL=C sort)
-          if [[ ${#REGO_FILES[@]} -eq 0 ]]; then
-            echo "ERROR: No .rego policy files found under ${POL}" >&2
-            exit 1
-          fi
-
-          {
-            sha256sum "${REGO_FILES[@]}"
-            sha256sum "${SET}"
-          } | tee "${PDR_DIR}/rer-policy-sha256.txt"
-
-      - name: Collect evidence directories (must exist; deterministic order)
-        id: evdirs
+      - name: Load required refs from policy settings (sorted → required-refs.txt)
+        id: refs
+        if: env.failure != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          # POLICY-CONFORMANT: release record is YAML
-          mapfile -t RECORDS < <(find releases -type f -name "release-record.yml" 2>/dev/null | LC_ALL=C sort || true)
-          if [[ ${#RECORDS[@]} -eq 0 ]]; then
-            echo "ERROR: No evidence found (no releases/**/release-record.yml)"; exit 1
-          fi
+          SETTINGS_FILE="${{ steps.lock.outputs.settings_path }}"
+          yq -r '.required_refs[]' "${SETTINGS_FILE}" | LC_ALL=C sort > "${PDR_ROOT}/required-refs.txt"
+          RCNT="$(wc -l < "${PDR_ROOT}/required-refs.txt" | awk '{print $1}')"
+          echo "required_refs_count=${RCNT}" >> "$GITHUB_OUTPUT"
+        # even if reading fails, subsequent Decide step will fail
 
-          mapfile -t DIRS < <(
-            printf '%s\n' "${RECORDS[@]}" \
-              | xargs -I{} dirname "{}" \
-              | LC_ALL=C sort -u
-          )
-
-          : > "${PDR_DIR}/evidence-dirs.txt"
-          for d in "${DIRS[@]}"; do
-            echo "$d" | tee -a "${PDR_DIR}/evidence-dirs.txt"
-          done
-
-          echo "count=${#DIRS[@]}" | tee -a $GITHUB_OUTPUT
-
-      - name: Extract required refs from rexec policy settings (deterministic order)
-        id: reqrefs
+      - name: Prepare wrapper inputs (PDR capture)
+        if: env.failure != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          SETTINGS="${{ steps.lock.outputs.SETTINGS_PATH }}"
-          yq -o=json '.' "${SETTINGS}" \
-            | jq -r '.policy.signature.verify_refs.required[]' \
-            | LC_ALL=C sort \
-            | tee "${PDR_DIR}/required-refs.txt"
+          cp "${PDR_ROOT}/evidence-dirs.txt" "${PDR_INPUTS}/evidence-dirs.txt"
+          [ -f "${PDR_ROOT}/required-refs.txt" ] && cp "${PDR_ROOT}/required-refs.txt" "${PDR_INPUTS}/required-refs.txt" || true
 
-          if [[ ! -s "${PDR_DIR}/required-refs.txt" ]]; then
-            echo "ERROR: No required refs defined at .policy.signature.verify_refs.required[]"; exit 1
-          fi
-
-      - name: Verify evidence signatures with cosign (fail-closed)
+      - name: cosign verify-blob for each required ref (deterministic order)
+        if: env.failure != 'true'
+        id: cosign
         shell: bash
         env:
+          COSIGN_EXPERIMENTAL: "0"
           COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
         run: |
           set -euo pipefail
-          ok_all=1
-          while IFS= read -r evdir; do
-            echo "== Verifying refs in: $evdir ==" | tee -a "${PDR_DIR}/logs/cosign.log"
+          : > "${PDR_LOGS}/cosign.log"
+          failures=0
+          if [ -f "${PDR_ROOT}/required-refs.txt" ]; then
             while IFS= read -r ref; do
-              blob="${evdir}/${ref}"
-              sig="${blob}.sig"
-              bundle="${blob}.bundle"
-              if [[ ! -f "$blob" ]]; then
-                echo "MISSING: $blob" | tee -a "${PDR_DIR}/logs/cosign.log"; ok_all=0; continue
+              [ -z "$ref" ] && continue
+              blob="$ref"; sig="${ref}.sig"; bun="${ref}.bundle"
+              if [ ! -f "$blob" ] || [ ! -f "$sig" ] || [ ! -f "$bun" ]; then
+                echo "::error::Missing blob/signature/bundle for $ref" | tee -a "${PDR_LOGS}/cosign.log"
+                failures=$((failures+1))
+                continue
+              }
+              echo "== Verify: $blob" | tee -a "${PDR_LOGS}/cosign.log"
+              if ! cosign verify-blob --key env://COSIGN_PUBLIC_KEY --signature "$sig" --bundle "$bun" "$blob" >> "${PDR_LOGS}/cosign.log" 2>&1; then
+                echo "::error::cosign verify-blob failed for $ref" | tee -a "${PDR_LOGS}/cosign.log"
+                failures=$((failures+1))
               fi
-              if [[ ! -f "$sig" ]]; then
-                echo "MISSING: $sig" | tee -a "${PDR_DIR}/logs/cosign.log"; ok_all=0; continue
-              fi
-              if [[ ! -f "$bundle" ]]; then
-                echo "MISSING: $bundle" | tee -a "${PDR_DIR}/logs/cosign.log"; ok_all=0; continue
-              fi
-              echo "Verifying ${blob} ..." | tee -a "${PDR_DIR}/logs/cosign.log"
-              if ! cosign verify-blob --key <(echo "${COSIGN_PUBLIC_KEY}") --signature "${sig}" --bundle "${bundle}" "${blob}" 2>&1 | tee -a "${PDR_DIR}/logs/cosign.log"; then
-                echo "COSIGN VERIFY FAILED for ${blob}" | tee -a "${PDR_DIR}/logs/cosign.log"
-                ok_all=0
-              fi
-            done < "${PDR_DIR}/required-refs.txt"
-          done < "${PDR_DIR}/evidence-dirs.txt"
-
-          if [[ $ok_all -ne 1 ]]; then
-            echo "Signature verification failures detected"; exit 1
+            done < "${PDR_ROOT}/required-refs.txt"
+          else
+            echo "::error::No required-refs.txt; cannot verify signatures" | tee -a "${PDR_LOGS}/cosign.log"
+            failures=$((failures+1))
           fi
+          echo "failures=${failures}" >> "$GITHUB_OUTPUT"
 
-      - name: Compute PR labels (meta.pr_labels)
-        id: prlabels
+      - name: Run conftest (release)
+        if: env.failure != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          # Default empty array for push and workflow_dispatch
-          echo '[]' > "${PDR_DIR}/pr-labels.json"
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            jq -c '[.pull_request.labels[].name]' "$GITHUB_EVENT_PATH" > "${PDR_DIR}/pr-labels.json"
-          fi
-          cat "${PDR_DIR}/pr-labels.json" | tee -a "${PDR_DIR}/logs/meta.log"
+          POLICY_DIR="${{ steps.lock.outputs.policies_path }}"
+          xargs -a "${PDR_ROOT}/evidence-dirs.txt" -r conftest test --no-color --namespace release --policy "${POLICY_DIR}" \
+            > "${PDR_LOGS}/release.log" 2>&1 || true
 
-      - name: Run conftest (release/promotion/consistency) with policy-shaped inputs
+      - name: Run conftest (promotion)
+        if: env.failure != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          POL="${{ steps.lock.outputs.POLICIES_PATH }}"
-          SET="${{ steps.lock.outputs.SETTINGS_PATH }}"
-          PR_LABELS_JSON="$(cat "${PDR_DIR}/pr-labels.json")"
+          POLICY_DIR="${{ steps.lock.outputs.policies_path }}"
+          xargs -a "${PDR_ROOT}/evidence-dirs.txt" -r conftest test --no-color --namespace promotion --policy "${POLICY_DIR}" \
+            > "${PDR_LOGS}/promotion.log" 2>&1 || true
 
-          # Ensure base branch ref is available for PR comparisons (promotion append-only)
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            git fetch --no-tags --prune --depth=1 origin "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}" || true
-          fi
-
-          while IFS= read -r evdir; do
-            RR_YML="${evdir}/release-record.yml"
-            PROMO_JSON="${evdir}/promotion-log.json"
-
-            test -f "${RR_YML}" || { echo "ERROR: Missing ${RR_YML}"; exit 1; }
-            test -f "${PROMO_JSON}" || { echo "ERROR: Missing ${PROMO_JSON} (required for promotion/consistency)"; exit 1; }
-
-            RELEASE_DIR_NAME="$(basename "${evdir}")"
-            RELEASE_DIR_PATH="${evdir}"
-
-            release_in="${PDR_DIR}/inputs/$(echo "${evdir}" | tr '/ ' '__')__release.json"
-            yq -o=json '.' "${RR_YML}" \
-              | jq --argjson labels "${PR_LABELS_JSON}" '. + {meta:{pr_labels:$labels}}' \
-              > "${release_in}"
-
-            echo "Conftest: release (${evdir})" | tee -a "${PDR_DIR}/logs/release.log"
-            if ! conftest test --no-color --all-namespaces -p "${POL}" -d "${SET}" -n release "${release_in}" 2>&1 | tee -a "${PDR_DIR}/logs/release.log"; then
-              echo "Release policy failures for ${evdir}"; exit 1
-            fi
-
-            promotion_in="${PDR_DIR}/inputs/$(echo "${evdir}" | tr '/ ' '__')__promotion.json"
-            head_obj="$(cat "${PROMO_JSON}")"
-
-            base_obj="null"
-            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-              if git show "origin/${{ github.base_ref }}:${PROMO_JSON}" >/dev/null 2>&1; then
-                base_obj="$(git show "origin/${{ github.base_ref }}:${PROMO_JSON}")"
-              fi
-            fi
-
-            jq -n --argjson base "${base_obj}" --argjson head "${head_obj}" '{base:$base, head:$head}' > "${promotion_in}"
-
-            echo "Conftest: promotion (${evdir})" | tee -a "${PDR_DIR}/logs/promotion.log"
-            if ! conftest test --no-color --all-namespaces -p "${POL}" -d "${SET}" -n promotion "${promotion_in}" 2>&1 | tee -a "${PDR_DIR}/logs/promotion.log"; then
-              echo "Promotion policy failures for ${evdir}"; exit 1
-            fi
-
-            consistency_in="${PDR_DIR}/inputs/$(echo "${evdir}" | tr '/ ' '__')__consistency.json"
-            rr_obj="$(yq -o=json '.' "${RR_YML}")"
-            promo_obj="$(cat "${PROMO_JSON}")"
-
-            jq -n \
-              --argjson rr "${rr_obj}" \
-              --argjson promo "${promo_obj}" \
-              --argjson labels "${PR_LABELS_JSON}" \
-              --arg dir_name "${RELEASE_DIR_NAME}" \
-              --arg dir_path "${RELEASE_DIR_PATH}" \
-              '{
-                release_record: $rr,
-                promotion_log: $promo,
-                postdeploy: null,
-                meta: {
-                  release_dir_name: $dir_name,
-                  release_dir_path: $dir_path,
-                  pr_labels: $labels
-                }
-              }' > "${consistency_in}"
-
-            echo "Conftest: consistency (${evdir})" | tee -a "${PDR_DIR}/logs/consistency.log"
-            if ! conftest test --no-color --all-namespaces -p "${POL}" -d "${SET}" -n consistency "${consistency_in}" 2>&1 | tee -a "${PDR_DIR}/logs/consistency.log"; then
-              echo "Consistency policy failures for ${evdir}"; exit 1
-            fi
-          done < "${PDR_DIR}/evidence-dirs.txt"
-
-      - name: Write PDR meta & summary
-        if: always()
+      - name: Run conftest (consistency)
+        if: env.failure != 'true'
         shell: bash
         run: |
           set -euo pipefail
-          jq -n \
-            --arg repo "${{ github.repository }}" \
-            --arg sha "${{ github.sha }}" \
-            --arg run_id "${{ github.run_id }}" \
-            --arg run_attempt "${{ github.run_attempt }}" \
-            --arg workflow "${{ github.workflow }}" \
-            --arg rer_repo "${{ steps.lock.outputs.RER_REPO }}" \
-            --arg rer_ref "${{ steps.lock.outputs.RER_REF }}" \
-            --arg pol "${{ steps.lock.outputs.POLICIES_PATH }}" \
-            --arg set "${{ steps.lock.outputs.SETTINGS_PATH }}" \
-            '{
-              consumer: { repository: $repo, sha: $sha },
-              run: { id: $run_id, attempt: $run_attempt, workflow: $workflow },
-              rexec: { repository: $rer_repo, ref: $rer_ref },
-              policy_contract: { policies_path: $pol, settings_path: $set },
-              timestamps: { generated_at: (now|todate) }
-            }' > "${PDR_DIR}/meta.json"
+          POLICY_DIR="${{ steps.lock.outputs.policies_path }}"
+          xargs -a "${PDR_ROOT}/evidence-dirs.txt" -r conftest test --no-color --namespace consistency --policy "${POLICY_DIR}" \
+            > "${PDR_LOGS}/consistency.log" 2>&1 || true
 
-          PASS_SUMMARY="All validations passed"
-          if [[ "${{ job.status }}" != "success" ]]; then
-            PASS_SUMMARY="One or more validations failed"
+      - name: Decide and write result.json + summary.md (fail-closed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail=0
+
+          # Early failure?
+          if [ "${failure:-false}" = "true" ]; then
+            fail=1
           fi
 
-          {
-            echo "# Policy Decision Record (PDR) Summary"
-            echo ""
-            echo "- Consumer repo: ${{ github.repository }}"
-            echo "- Commit SHA: ${{ github.sha }}"
-            echo "- Run ID / Attempt: ${{ github.run_id }} / ${{ github.run_attempt }}"
-            echo "- Rexec: ${{ steps.lock.outputs.RER_REPO }} @ ${{ steps.lock.outputs.RER_REF }}"
-            echo "- Policies path: ${{ steps.lock.outputs.POLICIES_PATH }}"
-            echo "- Settings path: ${{ steps.lock.outputs.SETTINGS_PATH }}"
-            echo ""
-            echo "## Evidence directories"
-            sed 's/^/- /' "${PDR_DIR}/evidence-dirs.txt"
-            echo ""
-            echo "## Required refs"
-            sed 's/^/- /' "${PDR_DIR}/required-refs.txt"
-            echo ""
-            echo "## Result"
-            echo "${PASS_SUMMARY}"
-          } > "${PDR_DIR}/summary.md"
+          # cosign failures
+          if [ -n "${{ steps.cosign.outputs.failures }}" ] && [ "${{ steps.cosign.outputs.failures }}" -ne 0 ]; then
+            fail=1
+          fi
 
-          jq -n --arg status "${{ job.status }}" '{status:$status}' > "${PDR_DIR}/result.json"
+          # conftest failures by grep
+          for ns in release promotion consistency; do
+            if [ -s "${PDR_LOGS}/${ns}.log" ] && grep -E 'FAIL|deny' -qi "${PDR_LOGS}/${ns}.log"; then
+              fail=1
+            fi
+          done
 
-      - name: Upload PDR artifact (always)
+          if [ "$fail" -ne 0 ]; then
+            cat > "${PDR_ROOT}/result.json" << 'JSON'
+            {"ok":false,"reason":"signature_or_policy_failure"}
+            JSON
+            if [ ! -f "${PDR_ROOT}/summary.md" ]; then
+              cat > "${PDR_ROOT}/summary.md" << 'MD'
+              # RER Gate Result
+
+              **FAILED** — One or more of: missing evidence, cosign verification failures, or conftest policy violations.
+              MD
+            fi
+            exit 1
+          else
+            cat > "${PDR_ROOT}/result.json" << 'JSON'
+            {"ok":true}
+            JSON
+            cat > "${PDR_ROOT}/summary.md" << 'MD'
+            # RER Gate Result
+
+            **PASSED** — All signatures verified and policies satisfied.
+            MD
+          fi
+
+      - name: Always upload PDR
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pdr-${{ github.run_id }}
-          path: pdr
-          retention-days: 7
+          name: pdr
+          path: pdr/
+          if-no-files-found: error

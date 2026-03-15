@@ -24,13 +24,20 @@ policy:
       enabled: true
       label: "regulatory-override-approved"
       max_days: 7
-      required_fields: ["reason","ticket","approved_by","approved_at","expires_at"]
-      required_approvals: ["security","sre"]
+      required_fields:
+        - "reason"
+        - "ticket"
+        - "approved_by"
+        - "approved_at"
+        - "expires_at"
+      required_approvals:
+        - "security"
+        - "sre"
       lock: true  # keep downgrades strongly gated
 
     # Additional regulated readiness expectations
     operational_readiness:
-      rollback_min_triggers: 2  # same as earliest invariant
+      rollback_min_triggers: 2
 
   evidence:
     # Required field paths in release-record input (mirrors earliest invariants)
@@ -61,7 +68,12 @@ policy:
 
     placeholders:
       # Placeholder token detection (case-insensitive, substring check)
-      tokens: ["<", "replace-me", "todo", "example", "tbd"]
+      tokens:
+        - "<"
+        - "replace-me"
+        - "todo"
+        - "example"
+        - "tbd"
 
     sbom:
       type: "spdx-json"
@@ -75,7 +87,8 @@ policy:
       lock: true  # restrict provenance filenames
 
     supply_chain:
-      container_digest_prefixes: ["sha256:"]
+      container_digest_prefixes:
+        - "sha256:"
       lock: true
 
     inventory:
@@ -88,7 +101,12 @@ policy:
 
   promotion:
     append_only: true
-    regulated_canary_stages: ["1%", "5%", "25%", "50%", "100%"]
+    regulated_canary_stages:
+      - "1%"
+      - "5%"
+      - "25%"
+      - "50%"
+      - "100%"
 
   validator:
     created_at_path_binding: true  # releases/YYYY/MM/<release.id>
@@ -98,6 +116,7 @@ policy:
     verify_refs:
       required:
         - "release-record.yml"
+        - "promotion-log.json"
         - "evidence/sbom.spdx.json"
         - "evidence/provenance.intoto.jsonl"
         - "evidence/test-summary.json"

@@ -1,0 +1,8 @@
+rer:
+  repository: <ORG_OR_USERNAME>/rexec
+  ref: vX.Y.Z
+  fetched_path: rer/fetched
+
+policy_contract:
+  policies_path: rer/fetched/policies
+  settings_path: rer/fetched/policies/policy-settings.yml

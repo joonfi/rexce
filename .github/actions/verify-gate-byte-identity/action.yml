@@ -1,0 +1,53 @@
+# File: .github/actions/verify-gate-byte-identity/action.yml
+name: verify-gate-byte-identity
+description: Verify byte-identity between consumer gate and rexec interface template (pinned via rer.lock.yml)
+inputs:
+  rexec_repository:
+    description: 'rexec repo, e.g., <ORG>/<rexec-repo>'
+    required: true
+  rexec_ref:
+    description: 'Pinned ref (tag vX.Y.Z or SHA)'
+    required: true
+  mode:
+    description: 'Comparison mode'
+    required: true
+    default: 'consumer-vs-interface'
+  consumer_gate_path:
+    description: 'Path to consumer gate file in the current workspace'
+    required: true
+runs:
+  using: "composite"
+  steps:
+    - name: Sanity: ensure consumer gate exists
+      shell: bash
+      run: |
+        set -euo pipefail
+        test -f "${{ inputs.consumer_gate_path }}" || { echo "::error::consumer gate missing"; exit 1; }
+
+    - name: Checkout rexec (pinned)
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.rexec_repository }}
+        ref: ${{ inputs.rexec_ref }}
+        path: _rexec
+        token: ${{ env.GITHUB_TOKEN || github.token }}
+
+    - name: Compute sha256 and compare (byte-identity)
+      shell: bash
+      env:
+        REXEC_IFACE_GATE: rexce/xcectua-interface/templates/xcectua-circuit/.github/workflows/rer-governance-gate.yml
+      run: |
+        set -euo pipefail
+        ref_gate="_rexec/${REXEC_IFACE_GATE}"
+        test -f "$ref_gate" || { echo "::error::rexec interface gate not found at ${REXEC_IFACE_GATE}"; exit 1; }
+        csum_cons="$(sha256sum "${{ inputs.consumer_gate_path }}" | awk '{print $1}')"
+        csum_ref="$(sha256sum "$ref_gate" | awk '{print $1}')"
+        echo "consumer=${csum_cons}"
+        echo "reference=${csum_ref}"
+        if [ "$csum_cons" != "$csum_ref" ]; then
+          echo "::error::Byte-identity mismatch between consumer gate and rexec template"
+          echo "===== DIFF START ====="
+          diff -u "$ref_gate" "${{ inputs.consumer_gate_path }}" || true
+          echo "===== DIFF END ====="
+          exit 1
+        fi

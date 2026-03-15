@@ -55,11 +55,11 @@ jobs:
           POLICIES_PATH="$(yq '.policy_contract.policies_path' "${RER_LOCKFILE}")"
           SETTINGS_PATH="$(yq '.policy_contract.settings_path' "${RER_LOCKFILE}")"
 
-          echo "RER_REPO=${RER_REPO}"                | tee -a $GITHUB_OUTPUT
-          echo "RER_REF=${RER_REF}"                  | tee -a $GITHUB_OUTPUT
-          echo "RER_FETCHED_PATH=${RER_FETCHED_PATH}"| tee -a $GITHUB_OUTPUT
-          echo "POLICIES_PATH=${POLICIES_PATH}"      | tee -a $GITHUB_OUTPUT
-          echo "SETTINGS_PATH=${SETTINGS_PATH}"      | tee -a $GITHUB_OUTPUT
+          echo "RER_REPO=${RER_REPO}"                 | tee -a $GITHUB_OUTPUT
+          echo "RER_REF=${RER_REF}"                   | tee -a $GITHUB_OUTPUT
+          echo "RER_FETCHED_PATH=${RER_FETCHED_PATH}" | tee -a $GITHUB_OUTPUT
+          echo "POLICIES_PATH=${POLICIES_PATH}"       | tee -a $GITHUB_OUTPUT
+          echo "SETTINGS_PATH=${SETTINGS_PATH}"       | tee -a $GITHUB_OUTPUT
 
       - name: Fetch rexec at pinned ref
         uses: actions/checkout@v4
@@ -80,44 +80,59 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.6.0
 
-      - name: Compute policy/settings hashes
+      - name: Compute policy/settings hashes (deterministic order)
         shell: bash
         run: |
           set -euo pipefail
           POL="${{ steps.lock.outputs.POLICIES_PATH }}"
           SET="${{ steps.lock.outputs.SETTINGS_PATH }}"
-          shopt -s globstar nullglob
-          sha256sum "${POL}"/**/*.rego "${SET}" | tee "${PDR_DIR}/rer-policy-sha256.txt"
 
-      - name: Collect evidence directories (must exist)
+          mapfile -t REGO_FILES < <(find "${POL}" -type f -name '*.rego' | LC_ALL=C sort)
+          if [[ ${#REGO_FILES[@]} -eq 0 ]]; then
+            echo "ERROR: No .rego policy files found under ${POL}" >&2
+            exit 1
+          fi
+
+          {
+            sha256sum "${REGO_FILES[@]}"
+            sha256sum "${SET}"
+          } | tee "${PDR_DIR}/rer-policy-sha256.txt"
+
+      - name: Collect evidence directories (must exist; deterministic order)
         id: evdirs
         shell: bash
         run: |
           set -euo pipefail
           # POLICY-CONFORMANT: release record is YAML
-          mapfile -t RECORDS < <(find releases -type f -name "release-record.yml" 2>/dev/null || true)
+          mapfile -t RECORDS < <(find releases -type f -name "release-record.yml" 2>/dev/null | LC_ALL=C sort || true)
           if [[ ${#RECORDS[@]} -eq 0 ]]; then
             echo "ERROR: No evidence found (no releases/**/release-record.yml)"; exit 1
           fi
 
-          declare -A SEEN=()
-          > "${PDR_DIR}/evidence-dirs.txt"
-          for f in "${RECORDS[@]}"; do
-            d="$(dirname "$f")"
-            if [[ -z "${SEEN["$d"]+x}" ]]; then
-              echo "$d" | tee -a "${PDR_DIR}/evidence-dirs.txt"
-              SEEN["$d"]=1
-            fi
-          done
-          echo "count=${#SEEN[@]}" | tee -a $GITHUB_OUTPUT
+          mapfile -t DIRS < <(
+            printf '%s\n' "${RECORDS[@]}" \
+              | xargs -I{} dirname "{}" \
+              | LC_ALL=C sort -u
+          )
 
-      - name: Extract required refs from rexec policy settings
+          : > "${PDR_DIR}/evidence-dirs.txt"
+          for d in "${DIRS[@]}"; do
+            echo "$d" | tee -a "${PDR_DIR}/evidence-dirs.txt"
+          done
+
+          echo "count=${#DIRS[@]}" | tee -a $GITHUB_OUTPUT
+
+      - name: Extract required refs from rexec policy settings (deterministic order)
         id: reqrefs
         shell: bash
         run: |
           set -euo pipefail
           SETTINGS="${{ steps.lock.outputs.SETTINGS_PATH }}"
-          yq -o=json '.' "${SETTINGS}" | jq -r '.policy.signature.verify_refs.required[]' | tee "${PDR_DIR}/required-refs.txt"
+          yq -o=json '.' "${SETTINGS}" \
+            | jq -r '.policy.signature.verify_refs.required[]' \
+            | LC_ALL=C sort \
+            | tee "${PDR_DIR}/required-refs.txt"
+
           if [[ ! -s "${PDR_DIR}/required-refs.txt" ]]; then
             echo "ERROR: No required refs defined at .policy.signature.verify_refs.required[]"; exit 1
           fi
@@ -182,22 +197,15 @@ jobs:
           fi
 
           while IFS= read -r evdir; do
-            # Paths
             RR_YML="${evdir}/release-record.yml"
             PROMO_JSON="${evdir}/promotion-log.json"
 
-            # Fail-closed for required policy inputs
             test -f "${RR_YML}" || { echo "ERROR: Missing ${RR_YML}"; exit 1; }
             test -f "${PROMO_JSON}" || { echo "ERROR: Missing ${PROMO_JSON} (required for promotion/consistency)"; exit 1; }
 
-            # Derive deterministic names/paths for meta
             RELEASE_DIR_NAME="$(basename "${evdir}")"
             RELEASE_DIR_PATH="${evdir}"
 
-            # -------------------------
-            # RELEASE namespace input
-            # input == release record object; includes meta.pr_labels
-            # -------------------------
             release_in="${PDR_DIR}/inputs/$(echo "${evdir}" | tr '/ ' '__')__release.json"
             yq -o=json '.' "${RR_YML}" \
               | jq --argjson labels "${PR_LABELS_JSON}" '. + {meta:{pr_labels:$labels}}' \
@@ -208,11 +216,6 @@ jobs:
               echo "Release policy failures for ${evdir}"; exit 1
             fi
 
-            # -------------------------
-            # PROMOTION namespace input
-            # input == { base: <obj>|null, head: <obj> }
-            # base is loaded from base branch (PR only) at same path; otherwise null.
-            # -------------------------
             promotion_in="${PDR_DIR}/inputs/$(echo "${evdir}" | tr '/ ' '__')__promotion.json"
             head_obj="$(cat "${PROMO_JSON}")"
 
@@ -230,11 +233,6 @@ jobs:
               echo "Promotion policy failures for ${evdir}"; exit 1
             fi
 
-            # -------------------------
-            # CONSISTENCY namespace input
-            # input == { release_record, promotion_log, postdeploy, meta }
-            # postdeploy is null for golden baseline unless you add postdeploy evidence.
-            # -------------------------
             consistency_in="${PDR_DIR}/inputs/$(echo "${evdir}" | tr '/ ' '__')__consistency.json"
             rr_obj="$(yq -o=json '.' "${RR_YML}")"
             promo_obj="$(cat "${PROMO_JSON}")"

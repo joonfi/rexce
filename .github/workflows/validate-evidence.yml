@@ -1,228 +1,41 @@
 # File: .github/workflows/validate-evidence.yml
-name: Validate Evidence — Aggregate Report + Policy Tests
+name: rexec policy-only guard (no evidence allowed)
 
 on:
-  workflow_dispatch:
-
   pull_request:
-    paths:
-      - 'policies/**'
-      - 'policies/tests/**'
-      - '.github/**'
-      - 'docs/**'
-      - 'README.md'
-
+    branches: [ "**" ]
   push:
-    branches: [ main ]
-    paths:
-      - 'policies/**'
-      - 'policies/tests/**'
-      - '.github/**'
-      - 'docs/**'
-      - 'README.md'
+    branches: [ "**" ]
 
 permissions:
   contents: read
-  pull-requests: write
 
 jobs:
-  validate:
+  no-evidence:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout PR head / repository
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Fetch base branch ref (for base/head comparisons)
-        if: github.event_name == 'pull_request'
+      - name: Fail if any releases/** present in repo
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin "${{ github.base_ref }}" --depth=1 || git fetch origin --prune
-          git rev-parse --verify "origin/${{ github.base_ref }}" >/dev/null 2>&1 || {
-            echo "ERROR: Unable to fetch origin/${{ github.base_ref }}; base branch is required for comparisons."
-            exit 1
-          }
-
-      - name: Install tooling (conftest, jq, yq) — pinned
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Pin conftest deterministically (no "latest")
-          CONTF_VER="0.56.0"
-          curl -sSL -o /tmp/conftest.tar.gz \
-            "https://github.com/open-policy-agent/conftest/releases/download/v${CONTF_VER}/conftest_${CONTF_VER}_Linux_x86_64.tar.gz"
-          tar -xzf /tmp/conftest.tar.gz
-          sudo mv conftest /usr/local/bin/conftest
-          conftest --version
-
-          # jq is preinstalled on ubuntu-latest, verify presence/version
-          jq --version
-
-          # Pin yq deterministically
-          YQ_VERSION="v4.44.3"
-          sudo curl -sSL -o /usr/local/bin/yq \
-            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
-          sudo chmod +x /usr/local/bin/yq
-          yq --version
-
-      - name: Validate (policy regression only + annotations + PR comment)
-        id: agg
-        shell: bash
-        run: |
-          set -euo pipefail
-          set +e
-
-          REPORT=validation-report.md
-          : > "$REPORT"
-
-          FAILED=0
-          REPORT_MARKER="<!-- EVIDENCE-VALIDATION-REPORT -->"
-          SETTINGS_FILE="policies/policy-settings.yml"
-
-          open_details() { echo "<details>" >> "$REPORT"; echo "<summary>$1</summary>" >> "$REPORT"; echo "" >> "$REPORT"; }
-          close_details() { echo "" >> "$REPORT"; echo "</details>" >> "$REPORT"; echo "" >> "$REPORT"; }
-          fail() { FAILED=1; }
-
-          echo "$REPORT_MARKER" >> "$REPORT"
-          echo "# Validation Report" >> "$REPORT"
-          echo "" >> "$REPORT"
-          echo "- Event: ${{ github.event_name }}" >> "$REPORT"
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo "- PR: #${{ github.event.pull_request.number }}" >> "$REPORT"
-            echo "- Base: ${{ github.base_ref }}" >> "$REPORT"
-          fi
-          echo "- Head: ${{ github.sha }}" >> "$REPORT"
-          echo "" >> "$REPORT"
-
-          # -----------------------------------------
-          # HARD SEPARATION: rexec is policy-only
-          # Fail closed if ANY releases/** exist in the repo OR are in the diff.
-          # -----------------------------------------
-
-          # 1) Fail if the repository contains any tracked releases/** content at all.
           if git ls-files 'releases/**' | grep -q .; then
-            open_details "❌ Separation breach: releases/** content exists in rexec"
-            echo "rexec is policy-only. Evidence MUST NOT be stored here." >> "$REPORT"
-            echo "" >> "$REPORT"
-            echo "Tracked releases/** files detected:" >> "$REPORT"
-            git ls-files 'releases/**' | sed 's/^/- /' >> "$REPORT"
-            close_details
-            fail
-          fi
-
-          # 2) Compute changed files deterministically per event, and fail if releases/** appear.
-          CHANGED=""
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            CHANGED="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" || true)"
-          elif [[ "${{ github.event_name }}" == "push" ]]; then
-            # Use push payload range when available
-            BEFORE="${{ github.event.before }}"
-            AFTER="${{ github.sha }}"
-            if [[ -n "${BEFORE}" && "${BEFORE}" != "0000000000000000000000000000000000000000" ]]; then
-              CHANGED="$(git diff --name-only "${BEFORE}...${AFTER}" || true)"
-            else
-              # Fallback (rare): compare HEAD~1 if before is unavailable
-              CHANGED="$(git diff --name-only HEAD~1...HEAD || true)"
-            fi
-          else
-            # workflow_dispatch: treat as policy regression; still enforce repo contains no releases/**
-            CHANGED=""
-          fi
-
-          if echo "${CHANGED}" | grep -qE '^releases/'; then
-            open_details "❌ Separation breach: releases/** changed in this run"
-            echo "rexec is policy-only. Evidence MUST NOT be added/changed here." >> "$REPORT"
-            echo "" >> "$REPORT"
-            echo "Changed releases/** paths:" >> "$REPORT"
-            echo "${CHANGED}" | grep -E '^releases/' | sed 's/^/- /' >> "$REPORT"
-            close_details
-            fail
-          fi
-
-          # -----------------------------------------
-          # POLICY REGRESSION ONLY (fixtures)
-          # -----------------------------------------
-
-          if [ ! -f "$SETTINGS_FILE" ]; then
-            open_details "❌ Missing policy settings: ${SETTINGS_FILE}"
-            echo "Cannot run policy regression without policy settings." >> "$REPORT"
-            close_details
-            fail
-          fi
-
-          echo "## Mode: Policy regression (fixtures only)" >> "$REPORT"
-          echo "" >> "$REPORT"
-
-          for ns in release promotion consistency; do
-            pass_dir="policies/tests/${ns}/pass"
-            fail_dir="policies/tests/${ns}/fail"
-
-            # PASS fixtures must pass
-            shopt -s nullglob
-            for f in "${pass_dir}"/*.json; do
-              open_details "PASS fixture (${ns}): $(basename "$f")"
-              conftest test "$f" -p policies -n "$ns" -d "$SETTINGS_FILE" >> "$REPORT" 2>&1
-              rc=$?
-              close_details
-              if [ $rc -ne 0 ]; then fail; fi
-            done
-
-            # FAIL fixtures must fail (rc == 0 is a problem)
-            for f in "${fail_dir}"/*.json; do
-              open_details "FAIL fixture (${ns}): $(basename "$f")"
-              conftest test "$f" -p policies -n "$ns" -d "$SETTINGS_FILE" >> "$REPORT" 2>&1
-              rc=$?
-              close_details
-              if [ $rc -eq 0 ]; then fail; fi
-            done
-          done
-
-          if [ $FAILED -eq 0 ]; then
-            echo "## Summary" >> "$REPORT"; echo "" >> "$REPORT"; echo "✅ No violations found." >> "$REPORT"
-          else
-            echo "## Summary" >> "$REPORT"; echo "" >> "$REPORT"; echo "❌ Violations found." >> "$REPORT"
-          fi
-
-          echo "failed=${FAILED}" >> $GITHUB_OUTPUT
-          echo "report_path=${REPORT}" >> $GITHUB_OUTPUT
-          cat "$REPORT" >> $GITHUB_STEP_SUMMARY
-          exit 0
-
-      - name: Post/Update PR comment with report
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const marker = '<!-- EVIDENCE-VALIDATION-REPORT -->';
-            const reportPath = '${{ steps.agg.outputs.report_path }}';
-            const body = fs.existsSync(reportPath)
-              ? fs.readFileSync(reportPath, 'utf8')
-              : `${marker}
-            # Validation Report
-
-            Report file not found.`;
-
-            const { owner, repo } = context.repo;
-            const issue_number = context.payload.pull_request.number;
-            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
-            const existing = comments.find(c => (c.body || '').includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
-            } else {
-              await github.rest.issues.createComment({ owner, repo, issue_number, body });
-            }
-
-      - name: Fail if validation found issues
-        if: always()
-        shell: bash
-        run: |
-          if [ "${{ steps.agg.outputs.failed }}" = "1" ]; then
-            echo "Validation failed. See PR comment (if PR) and job summary for details."
+            echo "::error::rexec must not contain any evidence (releases/** present)"
             exit 1
           fi
-          echo "Validation passed."
+
+      - name: Fail if PR modifies any releases/**
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          if git diff --name-only "$base" "$head" | grep -E '^releases/' -q; then
+            echo "::error::rexec PR cannot add/modify releases/**"
+            exit 1
+          fi

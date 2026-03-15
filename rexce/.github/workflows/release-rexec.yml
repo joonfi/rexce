@@ -1,4 +1,4 @@
-name: Release rexec (RER + Consumer Kit)
+name: Release rexec (RER + Xcectua Interface Kit)
 
 on:
   push:
@@ -41,7 +41,7 @@ jobs:
       # -----------------------------
       # INVARIANT: kit VERSION must equal tag version (canonical path in rexec)
       # -----------------------------
-      - name: Verify Consumer Kit version (tag == VERSION; fail-closed)
+      - name: Verify Xcectua Interface kit version (tag == VERSION; fail-closed)
         shell: bash
         run: |
           set -euo pipefail
@@ -62,34 +62,34 @@ jobs:
 
           TAG_VERSION="${TAG_NAME#v}"
 
-          KIT_VERSION_FILE="rexce/consumer-kit/VERSION"
+          KIT_VERSION_FILE="rexce/xcectua-interface/VERSION"
           if [[ ! -f "${KIT_VERSION_FILE}" ]]; then
-            echo "ERROR: Missing consumer kit VERSION file at ${KIT_VERSION_FILE}." >&2
+            echo "ERROR: Missing Xcectua Interface kit VERSION file at ${KIT_VERSION_FILE}." >&2
             exit 1
           fi
 
           # Read and normalize VERSION
           KIT_VERSION="$(head -n 1 "${KIT_VERSION_FILE}" | tr -d '\r' | xargs)"
           if [[ -z "${KIT_VERSION}" ]]; then
-            echo "ERROR: Consumer kit VERSION is empty." >&2
+            echo "ERROR: Xcectua Interface kit VERSION is empty." >&2
             exit 1
           fi
 
           # Enforce strict X.Y.Z in VERSION
           if [[ ! "${KIT_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "ERROR: Consumer kit VERSION '${KIT_VERSION}' must be in format X.Y.Z." >&2
+            echo "ERROR: Xcectua Interface kit VERSION '${KIT_VERSION}' must be in format X.Y.Z." >&2
             exit 1
           fi
 
-          echo "Tag version       : ${TAG_VERSION}"
-          echo "Consumer kit ver. : ${KIT_VERSION}"
+          echo "Tag version              : ${TAG_VERSION}"
+          echo "Xcectua Interface kit ver: ${KIT_VERSION}"
 
           if [[ "${TAG_VERSION}" != "${KIT_VERSION}" ]]; then
-            echo "ERROR: VERSION mismatch. Tag '${TAG_NAME}' must equal consumer kit VERSION '${KIT_VERSION}'." >&2
+            echo "ERROR: VERSION mismatch. Tag '${TAG_NAME}' must equal kit VERSION '${KIT_VERSION}'." >&2
             exit 1
           fi
 
-          echo "OK: Tag '${TAG_NAME}' matches consumer kit VERSION '${KIT_VERSION}'."
+          echo "OK: Tag '${TAG_NAME}' matches kit VERSION '${KIT_VERSION}'."
 
       # -----------------------------
       # POLICY TESTS: rexec remains policy-only; we only test rexec policies/fixtures
@@ -118,24 +118,24 @@ jobs:
             "policies/tests"
 
       # -----------------------------
-      # CONSUMER KIT INVARIANTS: ensure required kit files exist at release time
+      # XCECTUA INTERFACE KIT INVARIANTS: ensure required kit files exist at release time
       # -----------------------------
-      - name: Verify Consumer Kit template invariants (fail-closed)
+      - name: Verify Xcectua Interface kit template invariants (fail-closed)
         shell: bash
         run: |
           set -euo pipefail
 
           # Required kit files
-          test -f "rexce/consumer-kit/VERSION" || { echo "ERROR: missing rexce/consumer-kit/VERSION"; exit 1; }
-          test -f "rexce/consumer-kit/README.md" || { echo "ERROR: missing rexce/consumer-kit/README.md"; exit 1; }
-          test -f "rexce/consumer-kit/PDR-SPEC.md" || { echo "ERROR: missing rexce/consumer-kit/PDR-SPEC.md"; exit 1; }
+          test -f "rexce/xcectua-interface/VERSION" || { echo "ERROR: missing rexce/xcectua-interface/VERSION"; exit 1; }
+          test -f "rexce/xcectua-interface/README.md" || { echo "ERROR: missing rexce/xcectua-interface/README.md"; exit 1; }
+          test -f "rexce/xcectua-interface/PDR-SPEC.md" || { echo "ERROR: missing rexce/xcectua-interface/PDR-SPEC.md"; exit 1; }
 
           # Required template subtree
-          test -f "rexce/consumer-kit/templates/xcectua-circuit/rer/rer.lock.yml" || { echo "ERROR: missing template rer.lock.yml"; exit 1; }
-          test -f "rexce/consumer-kit/templates/xcectua-circuit/.github/CODEOWNERS" || { echo "ERROR: missing template CODEOWNERS"; exit 1; }
-          test -f "rexce/consumer-kit/templates/xcectua-circuit/.github/workflows/rer-governance-gate.yml" || { echo "ERROR: missing template rer-governance-gate.yml"; exit 1; }
+          test -f "rexce/xcectua-interface/templates/xcectua-circuit/rer/rer.lock.yml" || { echo "ERROR: missing template rer.lock.yml"; exit 1; }
+          test -f "rexce/xcectua-interface/templates/xcectua-circuit/.github/CODEOWNERS" || { echo "ERROR: missing template CODEOWNERS"; exit 1; }
+          test -f "rexce/xcectua-interface/templates/xcectua-circuit/.github/workflows/rer-governance-gate.yml" || { echo "ERROR: missing template rer-governance-gate.yml"; exit 1; }
 
-          echo "OK: consumer kit invariants present."
+          echo "OK: Xcectua Interface kit invariants present."
 
       # -----------------------------
       # RELEASE: create GitHub Release with adoption notes (deterministic body)
@@ -147,15 +147,15 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           body: |
-            ## rexec Release (RER) + Consumer Kit
+            ## rexec Release (RER) + Xcectua Interface Kit
 
             This release provides:
             - Authoritative OPA/Conftest policies and settings (policy-only repo)
-            - Consumer Kit templates to enforce RER in CI/CD
+            - Xcectua Interface kit templates to enforce RER in CI/CD
 
-            ### Consumer Kit
-            - Location: `rexce/consumer-kit/templates/xcectua-circuit/`
-            - Version: `rexce/consumer-kit/VERSION` (must equal this tag without leading `v`)
+            ### Xcectua Interface Kit
+            - Location: `rexce/xcectua-interface/templates/xcectua-circuit/`
+            - Version: `rexce/xcectua-interface/VERSION` (must equal this tag without leading `v`)
 
             ### Required consumer pinning
             Consumers MUST pin rexec using a lockfile:

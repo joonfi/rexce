@@ -1,0 +1,79 @@
+# File: .github/workflows/release-rexec.yml
+name: rexec release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+env:
+  OPA_VERSION: "0.66.0"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rexec
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag is strict semver with leading v and matches VERSION
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"     # vX.Y.Z
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Tag not strict semver vX.Y.Z"; exit 1; }
+          VER_FILE="rexce/xcectua-interface/VERSION"
+          test -f "${VER_FILE}" || { echo "::error::VERSION file missing at ${VER_FILE}"; exit 1; }
+          FILE_VER="$(tr -d '\n' < "${VER_FILE}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [ "v${FILE_VER}" = "${TAG}" ] || { echo "::error::VERSION ${FILE_VER} does not match tag ${TAG}"; exit 1; }
+
+      - name: Check kit invariants exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          must=( \
+            "README.md" \
+            "PDR-SPEC.md" \
+            ".github/actions/verify-gate-byte-identity/action.yml" \
+            "rexce/xcectua-interface/templates/xcectua-circuit/.github/workflows/rer-governance-gate.yml" \
+            "rexce/xcectua-interface/policies" \
+          )
+          for p in "${must[@]}"; do
+            test -e "$p" || { echo "::error::Missing invariant $p"; exit 1; }
+          done
+
+      - name: Verify repository contains no evidence (releases/**)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-files 'releases/**' | grep -q .; then
+            echo "::error::rexec must be policy-only; releases/** found"
+            exit 1
+          fi
+
+      - name: Install OPA (pinned)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSL -o /usr/local/bin/opa "https://openpolicyagent.org/downloads/v${OPA_VERSION}/opa_linux_amd64_static"
+          chmod +x /usr/local/bin/opa
+          opa version
+
+      - name: Policy regression (syntax + tests if present)
+        shell: bash
+        run: |
+          set -euo pipefail
+          POLICY_DIR="rexce/xcectua-interface/policies"
+          # Syntax check for each module
+          while IFS= read -r f; do
+            opa check "$f"
+          done < <(find "${POLICY_DIR}" -type f -name '*.rego' | LC_ALL=C sort)
+          # If tests exist (e.g., *_test.rego), run suite
+          if find "${POLICY_DIR}" -type f -name '*_test.rego' | grep -q .; then
+            opa test "${POLICY_DIR}"
+          fi

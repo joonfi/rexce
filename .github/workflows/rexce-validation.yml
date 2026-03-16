@@ -1,0 +1,25 @@
+name: rexce Contract Validation
+
+on:
+  workflow_dispatch: {}
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+      - name: Run contract validation
+        env:
+          SNAPSHOT_SIGNING_SECRET: ${{ secrets.SNAPSHOT_SIGNING_SECRET }}
+        run: |
+          python tests/validate_contract.py

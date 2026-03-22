@@ -5,7 +5,8 @@ on:
   workflow_call:
   pull_request:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   validate:
@@ -13,7 +14,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python tests/validate_contract.py
+      - name: Run rexce contract validator
+        run: python tests/validate_contract.py
       
       - name: Ensure contract files exist
         run: |

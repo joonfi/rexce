@@ -141,8 +141,7 @@ else:
 
 # Summary
 if ERRS:
-    print("
-==== CONTRACT VIOLATIONS ====")
+    print("\n==== CONTRACT VIOLATIONS ====")
     for e in ERRS:
         print("- ", e)
     sys.exit(1)

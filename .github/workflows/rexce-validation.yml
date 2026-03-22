@@ -1,4 +1,3 @@
-# rexce/.github/workflows/rexce-validate.yml
 name: rexce/validate
 
 on:
@@ -9,19 +8,18 @@ on:
       - main
 
 jobs:
-   validate:
-     name: rexce/validate
-     runs-on: ubuntu-latest
-     steps:
--      - uses: actions/checkout@v4
-+      - name: Checkout rexce repository
-+        uses: actions/checkout@v4
-+        with:
-+          repository: Irradi-ato-rs/rexce
-+          ref: main
+  validate:
+    name: rexce/validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rexce repository
+        uses: actions/checkout@v4
+        with:
+          repository: Irradi-ato-rs/rexce
+          ref: main
 
-       - name: Run rexce contract validator
-         run: python tests/validate_contract.py
+      - name: Run rexce contract validator
+        run: python tests/validate_contract.py
       
       - name: Ensure contract files exist
         run: |

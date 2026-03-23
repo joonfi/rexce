@@ -1,11 +1,11 @@
-name: rexce/validate
+#name: rexce/validate
 
 on:
   workflow_call:
-  pull_request:
-  push:
-    branches:
-      - main
+#  pull_request:
+#  push:
+#    branches:
+#      - main
 
 jobs:
   validate:
